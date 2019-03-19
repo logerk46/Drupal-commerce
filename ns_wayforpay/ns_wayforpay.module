@@ -1,0 +1,281 @@
+<?php
+
+/**
+ * @file
+ * Module implementing a Wayforpay payment method.
+ */
+
+include_once(dirname(__FILE__) . '/class/wayforpay.cls.php');
+
+/**
+ * Constant definitions.
+ */
+define('COMMERCE_WAYFORPAY_RETURN_URL', 'commerce/wayforpay/return');
+define('COMMERCE_WAYFORPAY_SERVICE_URL', 'commerce/wayforpay/service');
+
+/**
+ * Implements hook_menu().
+ */
+function ns_wayforpay_menu() {
+  $items[COMMERCE_WAYFORPAY_RETURN_URL] = array(
+    'page callback' => 'ns_wayforpay_return_page_callback',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+    'file' => 'ns_wayforpay.pages.inc',
+  );
+
+  $items[COMMERCE_WAYFORPAY_SERVICE_URL] = array(
+    'page callback' => 'ns_wayforpay_service_page_callback',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+    'file' => 'ns_wayforpay.pages.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function ns_wayforpay_commerce_payment_method_info() {
+  return array(
+    'ns_wayforpay' => array(
+      'title' => t('Wayforpay'),
+      'description' => t('Wayforpay payment method'),
+      'terminal' => FALSE,
+      'offsite' => TRUE,
+      'offsite_autoredirect' => TRUE,
+      'active' => TRUE,
+    ),
+  );
+}
+
+/**
+ * Payment method callback: settings form.
+ */
+function ns_wayforpay_settings_form($settings = NULL) {
+  $settings = (array) $settings + array(
+    'account' => 'test',
+    'merchant_id' => '',
+    'secret_key' => '',
+    'language' => 'RU',
+    'description' => array('value' => '', 'format' => NULL)
+  );
+
+  $languages = array(
+    'RU' => 'Русский',
+    'UA' => 'Украинский',
+    'EN' => 'Английский'
+  );
+
+  $form = array();
+
+  $form['account'] = array(
+    '#type' => 'radios',
+    '#title' => t('Payment mode'),
+    '#options' => array(
+      'test' => ('Test account - for testing purposes only'),
+      'live' => ('Live account - for processing real transactions'),
+    ),
+    '#default_value' => $settings['account'],
+  );
+
+  $form['merchant_id'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Merchant ID'),
+    '#default_value' => $settings['merchant_id'],
+    '#size' => 40,
+    '#maxlength' => 100,
+    '#required' => TRUE
+  );
+
+  $form['secret_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Secret key'),
+    '#default_value' => $settings['secret_key'],
+    '#size' => 40,
+    '#maxlength' => 100,
+    '#required' => TRUE
+  );
+
+  $form['language'] = array(
+    '#type' => 'select',
+    '#title' => t('LANGUAGE'),
+    '#default_value' => $settings['language'],
+    '#description' => t("Choose language of payment page"),
+    '#options' => $languages,
+    '#required' => FALSE
+  );
+
+  $form['description'] = array(
+    '#type' => 'text_format',
+    '#title' => t('Description'),
+    '#description' => t('Payment method description. You can use tokens'),
+    '#default_value' => $settings['description']['value'],
+    '#element_validate' => array('token_element_validate'),
+    '#token_types' => array('commerce-order'),
+    '#min_tokens' => 0,
+    '#max_tokens' => 10,
+	'#format' => $settings['description']['format'],
+  );
+
+  $form['token_tree'] = array(
+    '#theme' => 'token_tree',
+    '#token_types' => array('commerce-order'),
+    '#dialog' => TRUE,
+  );
+
+  return $form;
+}
+
+/**
+ * Payment method callback: checkout form.
+ */
+function ns_wayforpay_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+  $form = array();
+
+  $form['image'] = array(
+    '#theme' => 'image',
+    '#path' => drupal_get_path('module', 'ns_wayforpay') . '/images/w4p.png',
+    '#alt' => t('Wayforpay'),
+    '#attributes' => array(
+      'class' => array('commerce-wayforpay-logo'),
+    ),
+  );
+  
+  $form['desc'] = array(
+    '#prefix' => '<div class="commerce-wayforpay-payment-description">',
+    '#suffix' => '</div>',
+    '#markup' => token_replace($payment_method['settings']['description']['value'], array('commerce-order' => $order)),
+  );
+
+  // http://drupal.org/node/1705862
+  $form['dummy'] = array(
+    '#type' => 'hidden',
+    '#value' => 'dummy',
+  );
+  return $form;
+}
+
+/**
+ * Payment method callback: checkout form submission.
+ */
+function ns_wayforpay_submit_form_submit($payment_method, $pane_form, $pane_values, $order, $charge) {
+  $order->data['ns_wayforpay'] = $pane_values;
+}
+
+/**
+ * Payment method callback: payment redirect form.
+ */
+function ns_wayforpay_redirect_form($form, &$form_state, $order, $payment_method) {
+
+  global $base_url;
+
+  $w4p = new Wayforpay();
+
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $currency_code = $order_wrapper->commerce_order_total->currency_code->value();
+  $amount = $order_wrapper->commerce_order_total->amount->value();
+  $amount = commerce_currency_amount_to_decimal($amount, $currency_code);
+
+  $account_type = $payment_method['settings']['account'];
+
+  $fields = array(
+    'orderReference' => $order->order_id . wayforpay::ORDER_SEPARATOR . time(),
+    'merchantAccount' => ($account_type == 'test') ? wayforpay::TEST_MERCHANT_ACCOUNT : $payment_method['settings']['merchant_id'],
+    'orderDate' => $order->created,
+    'amount' => $amount,
+    'currency' => $currency_code,
+    'returnUrl' => $base_url . '/' . COMMERCE_WAYFORPAY_RETURN_URL,
+    'serviceUrl' => $base_url . '/' . COMMERCE_WAYFORPAY_SERVICE_URL,
+    'language' => $payment_method['settings']['language'],
+    'merchantAuthType' => 'simpleSignature',
+    'merchantDomainName' => $_SERVER['HTTP_HOST'],
+    'merchantTransactionSecureType' => 'AUTO'
+  );
+
+  $productNames = array();
+  $productQty = array();
+  $productPrices = array();
+  foreach ($order_wrapper->commerce_line_items->getIterator() as $line_item) {
+    $title = commerce_line_item_title($line_item->value());
+    $productNames[] = decode_entities($title);
+    $amount = $line_item->commerce_unit_price->amount->value();
+    $currency_code = $line_item->commerce_unit_price->currency_code->value();
+    $amount = commerce_currency_amount_to_decimal($amount, $currency_code);
+    $productPrices[] = $amount;
+    $productQty[] = (int)$line_item->quantity->value();
+  }
+  $fields['productName'] = $productNames;
+  $fields['productPrice'] = $productPrices;
+  $fields['productCount'] = $productQty;
+
+  $fields['merchantSignature'] = $w4p->getRequestSignature($fields);
+
+  $redirect_form = ns_wayforpay_redirect_form_generate($fields, wayforpay::URL);
+  
+  //watchdog("redirect_form", '<pre>' . print_r( $redirect_form, true) . '</pre>');
+  return $redirect_form;
+}
+
+/**
+ * Helper function for redirect form build.
+ * 
+ * @param array $data
+ *   An array containing the fields for redirect form.
+ * 
+ * @param string $url
+ *   Reserved param for future purposes.
+ * 
+ * @return array $form
+ *   An array contaaning the form ready to submit.
+ */
+
+function ns_wayforpay_redirect_form_generate($data, $url = '') {
+    $form['#action'] = wayforpay::URL;
+    foreach ($data as $k => $v) {
+      if (!is_array($v)) {
+        $form[$k] = array(
+          '#type' => 'hidden',
+          '#value' => $v
+        );
+      }
+      else {
+        $i = 0;
+        foreach ($v as $sk => $val) {
+          $form[$k . '[' . $sk . ']'] = array(
+            '#type' => 'hidden',
+            '#value' => $val
+          );
+        }
+      }
+    }
+
+    $form['actions'] = array('#type' => 'actions');
+  
+    $form['actions']['submit'] = array(
+      '#type' => 'submit',
+      '#value' => t('Pay via Wayforpay')
+    );
+  
+    return $form;
+}
+
+/**
+ * Save a new transaction.
+ *
+ * @param object $order
+ *   Order for which the transaction will be saved.
+ * @param object $order_wrapper
+ *   Order Wrapper for which the transaction will be saved.
+ */
+function ns_wayforpay_create_transaction($order, $order_wrapper) {
+  $transaction = commerce_payment_transaction_new('ns_wayforpay', $order->order_id);
+  //$transaction->instance_id = $order->data['payment_method'];
+  $transaction->instance_id = 'ns_wayforpay|commerce_payment_ns_wayforpay';
+  $transaction->amount = $order_wrapper->commerce_order_total->amount->value();
+  $transaction->currency_code = $order_wrapper->commerce_order_total->currency_code->value();
+  $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+  $transaction->message = t('The payment has completed.');
+  commerce_payment_transaction_save($transaction);
+}

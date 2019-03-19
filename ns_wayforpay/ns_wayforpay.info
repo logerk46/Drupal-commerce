@@ -1,0 +1,6 @@
+name = Commerce Wayforpay
+description = Provides a Wayforpay payment method
+core = 7.x
+package = Commerce (contrib)
+dependencies[] = commerce
+dependencies[] = commerce_paymen
